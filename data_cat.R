@@ -47,17 +47,17 @@ pass_pp_def <- pass_player_play %>%
   filter(position %in% c('ILB', 'DT', 'CB', 'DE', 'SS', 'NT', 'FS', 'OLB', 'MLB', 'DB', 'LB'))
 
 #gather only pre-snap tracking data
-pt_presnapd <- lapply(pass_tracking, \(l) l %>% filter(frameType == 'BEFORE_SNAP'))
+pt_presnap <- lapply(pass_tracking, \(l) l %>% filter(frameType == 'BEFORE_SNAP'))
 
 #summarize by last presnap frame
-pt_presnapd_lf <- lapply(pt_presnapd, \(l) l %>%
+pt_presnap_lf <- lapply(pt_presnapd, \(l) l %>%
   group_by(gameId, playId, nflId) %>% 
   summarise(last.frame = max(frameId)) %>% 
   left_join(., l, join_by(gameId, playId, nflId, last.frame == frameId))) %>% 
   do.call('rbind',.)
 
 #sort out pass coverage players only, no prevent
-pt_psd_lf_pc <- pt_presnapd_lf %>% 
+pt_psd_lf_pc <- pt_presnap_lf %>% 
   left_join(pass_pp_def[,c('gameId', 'playId', 'nflId', 'pff_defensiveCoverageAssignment', 'position')], join_by('gameId', 'playId', 'nflId')) %>% 
   filter(!is.na(pff_defensiveCoverageAssignment)) %>% 
   filter(pff_defensiveCoverageAssignment != 'PRE') %>% 
@@ -116,7 +116,7 @@ pass_plays_dis <- pass_plays %>%
   .default = 1)) %>% 
   inner_join(disguised_plays, join_by('gameId', 'playId'))
 
-#if disguised==F check for appropriate one or two deepest players
+#if disguised==F check for appropriate one deepest player
 deepest_dis <- pt_psd_lf_pc %>% 
   group_by(gameId, playId) %>% 
   summarise(deepest = max(fb.or.x)) %>% 
@@ -151,3 +151,35 @@ pass_plays_dis <- left_join(pass_plays_dis, deepest_dis[,c('gameId', 'playId', '
   mutate(disguised = ifelse(is.na(disguised2), T, disguised2)) %>% 
   select(!c('disguised2'))
 
+#add disguise assignments to all pass tracking data
+pass_tracking_dis <- lapply(pass_tracking, \(l) inner_join(l, pass_plays_dis[,c('gameId', 'playId', 'mof', 'highSafeties', 'playDisguised')], join_by('gameId', 'playId')) %>% left_join(., player_play[,c('gameId', 'playId', 'nflId', 'pff_defensiveCoverageAssignment')],join_by('gameId', 'playId', 'nflId')) %>% left_join(.,players[,c('nflId', 'position')], join_by('nflId')))
+
+#defense only
+pass_tracking_disd <- lapply(pass_tracking_dis, \(l) l %>% filter(position %in% c('ILB', 'DT', 'CB', 'DE', 'SS', 'NT', 'FS', 'OLB', 'MLB', 'DB', 'LB')))
+
+#check for: PRE players, more than 11 players, assignments which don't match coverage, plays within 10 yards
+prevent <- lapply(pass_tracking_disd, \(l) l %>% filter(pff_defensiveCoverageAssignment=='PRE')) #empty
+
+player_counts <- lapply(pass_tracking_disd, \(l) l %>% group_by(gameId, playId)%>% summarize(playercount = n_distinct(nflId))) %>% do.call('rbind',.) #all 11s
+
+football_checks <- lapply(pass_tracking_disd, \(l) l %>% filter(fb.off.x > 100)) #empty
+
+#taken from PFF's definitions of coverages and assignments
+mismatch <- lapply(pass_tracking_disd, \(l) l %>% mutate(mismatch = case_when(
+  pff_defensiveCoverageAssignment %in% c('2L', '2R') & !(pff_passCoverage %in% c('2-Man', 'Cover-2', 'Cover 6-Left', 'Cover-6 Right')) ~ T,
+  pff_defensiveCoverageAssignment %in% c('3M', '3L', '3R') & !(pff_passCoverage %in% c('Cover-3', 'Cover-3 Seam', 'Cover-3 Cloud Left', 'Cover-3 Cloud Right', 'Cover-3 Double Cloud')) ~ T,
+  pff_defensiveCoverageAssignment %in% c('4OR', '4OL', '4IL', '4IR') & !(pff_passCoverage %in% c('Quarters', 'Cover-6 Right', 'Cover 6-Left')) ~ T,
+  pff_defensiveCoverageAssignment %in% c('FR', 'FL') & !(pff_passCoverage %in% c('Cover-2', '2-Man', 'Cover-3 Cloud Left', 'Cover-3 Cloud Right', 'Cover-3 Double Cloud', 'Cover 6-Left', 'Cover-6 Right')) ~ T,
+  pff_defensiveCoverageAssignment %in% c('CFR', 'CFL') & !(pff_passCoverage %in% c('Cover-3', 'Cover-3 Seam', 'Cover-3 Cloud Left', 'Cover-3 Cloud Right', 'Cover-3 Double Cloud', 'Quarters', 'Cover-6 Right', 'Cover 6-Left')) ~ T,
+  pff_defensiveCoverageAssignment %in% c('DF') & !(pff_passCoverage %in% c('Cover-1')) ~ T,
+  .default = F)) %>% 
+  filter(mismatch == T)) %>% 
+  do.call('rbind',.) %>% 
+  group_by(gameId,playId) #%>% 
+  #summarize(no_players = n_distinct(nflId))
+
+pass_plays_dis <- anti_join(pass_plays_dis, mismatch, join_by(gameId, playId))
+
+pass_tracking_dis <- lapply(pass_tracking_dis, \(l) anti_join(l, mismatch, join_by(gameId, playId)))
+
+pass_tracking_disd <- lapply(pass_tracking_disd, \(l) anti_join(l, mismatch, join_by(gameId, playId)))
