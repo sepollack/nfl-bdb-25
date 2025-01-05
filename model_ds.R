@@ -2,6 +2,10 @@ library(tidyverse)
 library(torch)
 library(pROC)
 library(probably)
+library(scales)
+library(sportyR)
+library(gganimate)
+library(nflplotR)
 
 play_summary3 <- play_summary3 %>% 
   mutate(playDisguised = as.numeric(playDisguised) + 1)
@@ -372,9 +376,81 @@ sum(predt$correct)/nrow(predt)
 #calibration
 predictions3 %>% cal_plot_breaks(label, V1)
 
+post_model_playsummary <- play_summary3[test_id3, -5] %>% 
+  cbind(predictions3[,-c(3, 5)]) %>% 
+  left_join(pass_plays_dis[ ,c(6, 15, 49, 54, 3, 7, 8, 22)])
+
+### charts and such for kaggle
+
 #animation
-#disguise rates mof
-#lionsplays
-#epaplotcotv
-#plotting-defense-pc
+alldata2022092513679 <- pass_tracking_dis$tracking_week_3.csv %>% filter(gameId==2022092513, playId==679)
+
+geom_football(league = 'nfl', rotation = 90, x_trans = 60, ylims = c(-53.3/2, 53.3/2), xlims = c(30, 65)) + 
+  geom_hline(yintercept = 44.71, color='navy') + 
+  geom_hline(yintercept = 44.71 + 9, color = 'gold') +
+  geom_label(data = alldata2022092513679 %>% filter(frameId >= 47 & frameId <= 109), aes(x = fb.or.y, y = off.x, label = position, color = club, fill = club, fontface = 'bold')) +
+  scale_color_nfl(type = "secondary") +
+  scale_fill_nfl(type = 'primary') +
+  transition_time(frameId)
+
+#pre-snap db locations
+plotting_defense_pc <- pt_dis_lfps %>%filter(position %in% c('CB','SS','FS','DB'))
+
+#disguise rates by team
+disguiseratesmof <- as.data.frame((prop.table(table(pass_plays_dis$defensiveTeam, pass_plays_dis$highSafeties, pass_plays_dis$playDisguised), margin = 1))) %>%
+  filter(Var2 != 0, Var3 == T)
+
+#mean and median epa by coverage type
+pass_plays_dis_cg <- pass_plays_dis %>% 
+  mutate(covgroup = case_when(
+  pff_passCoverage %in% c('Cover-1', 'Cover-1 Double') ~ 'Cover-1',
+  pff_passCoverage %in% c('Cover-3', 'Cover-3 Seam', 'Cover-3 Cloud Right', 'Cover-3 Cloud Left', 'Cover-3 Double Cloud') ~ 'Cover-3',
+  pff_passCoverage %in% c('Cover-6 Right', 'Cover 6-Left') ~ 'Cover-6',
+  .default = pff_passCoverage
+))
+
+undis_epa_cov <- pass_plays_dis_cg %>% 
+  filter(playDisguised == F) %>% 
+  group_by(covgroup) %>% 
+  summarise(mean(expectedPointsAdded), median(expectedPointsAdded)) %>%
+  rename('mean.undis.epa' = 'mean(expectedPointsAdded)', 'med.undis.epa' = 'median(expectedPointsAdded)')
+
+dis_epa_cov <- pass_plays_dis_cg %>% filter(playDisguised == T) %>% 
+  group_by(covgroup) %>% 
+  summarise(mean(expectedPointsAdded), median(expectedPointsAdded)) %>% 
+  rename('mean.dis.epa' = 'mean(expectedPointsAdded)', 'med.dis.epa' = 'median(expectedPointsAdded)')
+
+epaplotcov <- left_join(undis_epa_cov, dis_epa_cov, join_by(covgroup)) %>% 
+  mutate(delta.mean = mean.undis.epa - mean.dis.epa, delta.med = med.undis.epa - med.dis.epa)
+
 #mean ds for all cov types
+postmodel_ps_cg <- post_model_playsummary %>% 
+  mutate(covgroup = case_when(
+  pff_passCoverage %in% c('Cover-1', 'Cover-1 Double') ~ 'Cover-1',
+  pff_passCoverage %in% c('Cover-3', 'Cover-3 Seam', 'Cover-3 Cloud Right', 'Cover-3 Cloud Left', 'Cover-3 Double Cloud') ~ 'Cover-3',
+  pff_passCoverage %in% c('Cover-6 Right', 'Cover 6-Left') ~ 'Cover-6',
+  .default = pff_passCoverage
+))
+
+cov_v2_dis <- postmodel_ps_cg %>% 
+  filter(playDisguised == 2) %>% 
+  group_by(covgroup) %>% 
+  summarise(mean(V2)) %>%
+  rename('mean.ds.dis' = 'mean(V2)')
+
+cov_v2_undis <- postmodel_ps_cg %>% 
+  filter(playDisguised == 1) %>% 
+  group_by(covgroup) %>%
+  summarise(mean(V2)) %>%
+  rename('mean.ds.und' = 'mean(V2)')
+
+covplotv2 <- full_join(cov_v2_dis, cov_v2_undis, join_by(covgroup)) %>% 
+  mutate(delta.mean = mean.ds.dis - mean.ds.und)
+
+perc <- label_percent(accuracy = 0.1)
+
+covgrouptable <- covplotv2 %>% 
+  mutate(mean.ds.dis.p = perc(mean.ds.dis), mean.ds.und.p = perc(mean.ds.und), Difference = round(delta.mean * 100, digits = 1)) %>% 
+  select(covgroup, mean.ds.dis.p, mean.ds.und.p, Difference) %>% 
+  rename('Coverage Type'='covgroup', 'Mean Disguise Score, Disguised'=mean.ds.dis.p, 'Mean Disguise Score, Undisguised'='mean.ds.und.p') %>% 
+  arrange(desc(Difference))
