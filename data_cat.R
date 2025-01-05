@@ -125,8 +125,6 @@ deepest_dis <- pt_psd_lf_pc %>%
   left_join(., pass_plays_dis[, c('gameId', 'playId', 'playDisguised')], join_by('gameId', 'playId')) %>% 
   filter(playDisguised == F)
 
-deepest_dis2_nfl <- read_csv('deepest_dis2.csv')
-
 #check for disguised plays with all shallow players
 deepest_dis2 <- pt_psd_lf_pc %>% 
   group_by(gameId, playId) %>% 

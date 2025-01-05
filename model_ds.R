@@ -1,22 +1,21 @@
-#packages
 library(tidyverse)
 library(torch)
+library(pROC)
+library(probably)
 
-#separate out undisguised plays to train coverage reader
-pt_for_tensor_do_und <- pt_for_tensor_do %>% filter(playDisguised == F)
-pt_for_tensor_do_dis <- pt_for_tensor_do %>% filter(playDisguised == T)
+play_summary3 <- play_summary3 %>% 
+  mutate(playDisguised = as.numeric(playDisguised) + 1)
 
-n_plays <- n_distinct(pt_for_tensor_do_und$gameIdplayId)
-n_features <- 5
-data_tensor <- torch_empty(n_plays, 1, n_features, 11, 11)
-n_class <- 2
+pt_for_tensor3 <- left_join(pt_for_tensor_test, play_summary3[,c("gameIdplayId", "coverageRead")]) %>% 
+  mutate(coverageRead = as.numeric(coverageRead)) %>%
+  mutate(playDisguised = as.numeric(playDisguised) + 1)
 
-play_summary <- pt_for_tensor_do_und %>% select(gameIdplayId, highSafeties) %>%
-  unique(.) %>% 
-  mutate(i = 1:n_plays)
+n_plays3 <- n_distinct(pt_for_tensor3$gameIdplayId)
+n_features3 <- 15
+data_tensor3 <- torch_empty(n_plays3, 1, n_features3, 11, 11)
+n_class3 <- 2
 
-#create tensor from data
-fill_row <- function(row) {
+fill_row3 <- function(row) {
   
   # indices for putting in tensor
   i <- row$i # row
@@ -26,7 +25,7 @@ fill_row <- function(row) {
   playid <- row$gameIdplayId
   #frameid <- row$frame_id
   
-  play_df <- pt_for_tensor_do_und %>%
+  play_df <- pt_for_tensor3 %>%
     filter(gameIdplayId == playid) %>%
     select(-gameIdplayId)
   
@@ -34,73 +33,76 @@ fill_row <- function(row) {
   defenders <- 11
   n_offense <- 11
   
-  # get rid of non-location columns
-  play_df <- play_df %>% select(c(fb.or.x, fb.or.y, l2g.or.x, x.dis.o, y.dis.o))
+  # get rid of columns
+  play_df <- play_df %>% select(-c(nflId, playDisguised, highSafeties))
   
   # where the magic happens
-  data_tensor[i,f, , 1:defenders, 1:n_offense] <-
+  data_tensor3[i,f, , 1:defenders, 1:n_offense] <-
     torch_tensor(t(play_df))$view(c(-1, defenders, n_offense))
 }
 
-walk(.x=1:nrow(play_summary), ~ {
+walk(.x=1:nrow(play_summary3), ~ {
   if (.x %% 250 == 0) {
-    message(glue::glue("{.x} of {nrow(play_summary)}"))
+    message(glue::glue("{.x} of {nrow(play_summary3)}"))
   }
-  fill_row(play_summary %>% dplyr::slice(.x))
+  fill_row3(play_summary3 %>% dplyr::slice(.x))
 })
 
-label_tensor <- torch_tensor(play_summary$highSafeties, dtype = torch_long())
-data_tensor <- torch_squeeze(data_tensor)
+label_tensor3 <- torch_tensor(play_summary3$playDisguised, dtype = torch_long())
+data_tensor3 <- torch_squeeze(data_tensor3)
 
-test_size <- 2645
-set.seed(19) #hey
+test_size3 <- 1000
+set.seed(19)
 
 # hold out
-test_id <- sample(1:n_plays, size = test_size)
+test_id3 <- sample(1:n_plays3, size = test_size3)
+test_data3 <- data_tensor3[test_id3, ..]
+test_label3 <- label_tensor3[test_id3]
 
 # full training set
-train_id <- setdiff(1:n_plays, test_id)
-train_data <- data_tensor[train_id, ..]
-train_label <- label_tensor[train_id]
+train_id3 <- setdiff(1:n_plays3, test_id3)
+train_data3 <- data_tensor3[train_id3, ..]
+train_label3 <- label_tensor3[train_id3]
 
 # helper thing that is just 1, ..., length train data
-all_train_idx <- 1:dim(train_data)[1]
+all_train_idx3 <- 1:dim(train_data3)[1]
 
 # create folds from the train indices
 # stratified by label
-folds <- splitTools::create_folds(
-  y = as.integer(train_label),
+folds3 <- splitTools::create_folds(
+  y = as.integer(train_label3),
   k = 5,
   type = "stratified",
   invert = TRUE
 )
 
-
-
-augment_data <- function(df,
-                         # stuff that will be multiplied by -1 (y.dis.o)
-                         flip_indices = c(5),
-                         # raw y location
-                         subtract_indices = c(2)) {
+augment_data3 <- function(df,
+                          # stuff that will be multiplied by -1 (y.dis.o, o.y, a.y, s.y)
+                          flip_indices = c(6, 8, 10, 14),
+                          # raw y location
+                          subtract_indices = c(3, 11)) {
   
   
   # indices of the elements that need to be flipped
   t <- torch_ones_like(df)
-  t[, flip_indices, , ] <- -1
-  
+  t[, flip_indices[1], , ] <- -1
+  t[, flip_indices[2], , ] <- -1
+  t[, flip_indices[3], , ] <- -1
+  t[, flip_indices[4], , ] <- -1
   # first fix: multiply by -1 where needed (stuff like speed in Y direction)
   flipped <- df * t
   
   # for flipping Y itself, need to do 160/3 - y
   t <- torch_zeros_like(df)
-  t[, subtract_indices, , ] <- 160 / 3
+  t[, subtract_indices[1], , ] <- 160 / 3
+  t[, subtract_indices[2], , ] <- 160 / 3
   
   # second fix: flip around y
-  flipped[, subtract_indices, , ] <- t[, subtract_indices, , ] - flipped[, subtract_indices, , ]
+  flipped[, subtract_indices[1], , ] <- t[, subtract_indices[1], , ] - flipped[, subtract_indices[1], , ]
+  flipped[, subtract_indices[2], , ] <- t[, subtract_indices[2], , ] - flipped[, subtract_indices[2], , ]
   
   return(flipped)
 }
-
 
 tracking_dataset <- dataset(
   name = "tracking_dataset",
@@ -116,18 +118,18 @@ tracking_dataset <- dataset(
   }
 )
 
-train_ds <- tracking_dataset(train_data, train_label)
-train_dl <- train_ds %>% dataloader(batch_size = 64, shuffle = TRUE)
+train_ds3 <- tracking_dataset(train_data3, train_label3)
+train_dl3 <- train_ds3 %>% dataloader(batch_size = 64, shuffle = TRUE)
 
-net <- nn_module(
+net3 <- nn_module(
   "Net",
   initialize = function() {
     self$conv_block_1 <- nn_sequential(
       nn_conv2d(
-        # 1x1 convolution taking in 11 (n_features) channels and outputting 128
-        # before: batch * 11 * 11 * 11
+        # 1x1 convolution taking in 15 (n_features3) channels and outputting 128
+        # before: batch * 15 * 11 * 11
         # after: batch * 128 * 11 * 11
-        in_channels = n_features,
+        in_channels = n_features3,
         out_channels = 128,
         kernel_size = 1
       ),
@@ -178,13 +180,12 @@ net <- nn_module(
       nn_linear(96, 256),
       nn_relu(inplace = TRUE),
       
-      # note: breaks on current kaggle version
       nn_batch_norm1d(256),
       nn_layer_norm(256),
       nn_dropout(p = 0.3),
       
       # n_class is how many distinct labels there are
-      nn_linear(256, n_class)
+      nn_linear(256, n_class3)
     )
   },
   forward = function(x) {
@@ -229,25 +230,25 @@ net <- nn_module(
 set.seed(19)
 torch_manual_seed(19)
 
-accuracies <- torch_zeros(length(folds))
-best_epochs <- torch_zeros(length(folds))
+accuracies3 <- torch_zeros(length(folds3))
+best_epochs3 <- torch_zeros(length(folds3))
 
 epochs <- 50
 
 # start iteration over folds
-for (fold in 1:length(folds)) {
+for (fold in 1:length(folds3)) {
   cat(sprintf("\n------------- FOLD %d ---------", fold))
   
-  model <- net()
-  optimizer <- optim_adam(model$parameters, lr = 0.001)
+  model3 <- net3()
+  optimizer <- optim_adam(model3$parameters, lr = 0.001)
   scheduler <- lr_step(optimizer, step_size = 1, 0.975)
   
   # extract train and validation sets
-  val_i <- folds[[fold]]
-  train_i <- all_train_idx[-val_i]
+  val_i <- folds3[[fold]]
+  train_i <- all_train_idx3[-val_i]
   
-  .ds_train <- dataset_subset(train_ds, train_i)
-  .ds_val <- dataset_subset(train_ds, val_i)
+  .ds_train <- dataset_subset(train_ds3, train_i)
+  .ds_val <- dataset_subset(train_ds3, val_i)
   
   .train_dl <- .ds_train %>%
     dataloader(batch_size = 64, shuffle = TRUE)
@@ -260,15 +261,15 @@ for (fold in 1:length(folds)) {
     valid_accuracies <- c()
     
     # train step: loop over batches
-    model$train()
+    model3$train()
     for (b in enumerate(.train_dl)) {
       # augment first
-      b_augmented <- augment_data(b$x)
+      b_augmented <- augment_data3(b$x)
       x <- torch_cat(list(b$x, b_augmented))
       # double the label list
       y <- torch_cat(list(b$y, b$y))
       optimizer$zero_grad()
-      loss <- nnf_cross_entropy(model(x), y)
+      loss <- nnf_cross_entropy(model3(x), y)
       #loss$requires_grad = T
       loss$backward()
       optimizer$step()
@@ -276,14 +277,14 @@ for (fold in 1:length(folds)) {
     }
     
     # validation step: loop over batches
-    model$eval()
+    model3$eval()
     for (b in enumerate(.valid_dl)) {
-      output <- model(b$x)
+      output <- model3(b$x)
       #print(output)
       
       # augment
-      valid_data_augmented <- augment_data(b$x)
-      output_augmented <- model(valid_data_augmented)
+      valid_data_augmented <- augment_data3(b$x)
+      output_augmented <- model3(valid_data_augmented)
       output <- (output + output_augmented) / 2
       
       valid_losses <- c(valid_losses, nnf_cross_entropy(output, b$y)$item())
@@ -297,115 +298,83 @@ for (fold in 1:length(folds)) {
     
     if (epoch %% 10 == 0) {
       cat(sprintf("\nLoss at epoch %d: training: %1.4f, validation: %1.4f // validation accuracy %1.4f", epoch, mean(train_losses), mean(valid_losses), mean(valid_accuracies)))
+      
     }
     
-    if (mean(valid_accuracies) > as.numeric(accuracies[fold])) {
+    if (mean(valid_accuracies) > as.numeric(accuracies3[fold])) {
       message(glue::glue("Fold {fold}: New best at epoch {epoch} ({round(mean(valid_accuracies), 3)}). Saving model"))
       
-      torch_save(model, glue::glue("best_model_{fold}.pt"))
+      torch_save(model3, glue::glue("best_model3_{fold}.pt"))
       
       # save new best loss
-      accuracies[fold] <- mean(valid_accuracies)
-      best_epochs[fold] <- epoch
+      accuracies3[fold] <- mean(valid_accuracies)
+      best_epochs3[fold] <- epoch
     }
   }
 }
 
-play_summary_test <- play_summary[test_id,]
-
-#select test set undisguised plays and combine with disguised plays
-pt_for_tensor_test <- pt_for_tensor_do_und %>% 
-  filter(gameIdplayId %in% play_summary_test$gameIdplayId) %>% 
-  rbind(.,pt_for_tensor_do_dis)
-
-n_plays2 <- n_distinct(pt_for_tensor_test$gameIdplayId)
-data_tensor2 <- torch_empty(n_plays2, 1, n_features, 11, 11)
-
-play_summary2 <- pt_for_tensor_test %>% 
-  select(gameIdplayId, playDisguised, highSafeties) %>% 
-  unique(.) %>% 
-  mutate(i = 1:n_plays2)
-
-fill_row2 <- function(row) {
-  
-  # indices for putting in tensor
-  i <- row$i # row
-  f <- 1 # frame
-  
-  # play info for extracting from df
-  playid <- row$gameIdplayId
-  #frameid <- row$frame_id
-  
-  play_df <- pt_for_tensor_test %>%
-    filter(gameIdplayId == playid) %>%
-    select(-gameIdplayId)
-  
-  # how many defense and offense players are there on this play?
-  defenders <- 11
-  n_offense <- 11
-  
-  # get rid of non-location columns
-  play_df <- play_df %>% select(c(fb.or.x, fb.or.y, l2g.or.x, x.dis.o, y.dis.o))
-  
-  # where the magic happens
-  data_tensor2[i,f, , 1:defenders, 1:n_offense] <-
-    torch_tensor(t(play_df))$view(c(-1, defenders, n_offense))
-}
-
-walk(.x=1:nrow(play_summary2), ~ {
-  if (.x %% 250 == 0) {
-    message(glue::glue("{.x} of {nrow(play_summary2)}"))
-  }
-  fill_row2(play_summary2 %>% dplyr::slice(.x))
-})
-
-label_tensor2 <- torch_tensor(play_summary2$highSafeties, dtype = torch_long())
-data_tensor2 <- torch_squeeze(data_tensor2)
 
 # get the labels
-labels <- label_tensor2 %>%
+labels3 <- test_label3 %>%
   as.matrix() %>%
   as_tibble() %>%
   set_names("label")
 
 # load all the models
-models <- map(1:length(folds), ~ {
-  torch_load(glue::glue("best_model_{.x}.pt"))
+models3 <- map(1:length(folds3), ~ {
+  torch_load(glue::glue("best_model3_{.x}.pt"))
 })
 
 # augment test data
-test_data_augmented <- augment_data(data_tensor2)
+test_data_augmented3 <- augment_data3(test_data3)
 
 # initialize empty output
-output <- torch_zeros(length(folds), dim(data_tensor2)[1], n_class)
+output3 <- torch_zeros(length(folds3), dim(test_data3)[1], n_class3)
 
 # get augmented prediction for each fold
-walk(1:length(folds), ~ {
-  output[.x, ..] <- (models[[.x]](data_tensor2) + models[[.x]](test_data_augmented)) / 2
+walk(1:length(folds3), ~ {
+  output3[.x, ..] <- (models3[[.x]](test_data3) + models3[[.x]](test_data_augmented3)) / 2
 })
 
+output3_sm <- nnf_softmax(output3, dim=3)
+
 # average prediction over folds
-predictions <- (1 / length(folds)) * torch_sum(output, 1) %>%
-  as.matrix()
+predictions3 <- (1 / length(folds3)) * torch_sum(output3_sm, 1)  %>%  as.matrix()
 
 # join prediction to label
-predictions <- predictions %>%
+predictions3 <- predictions3 %>%
   as_tibble() %>%
   mutate(row = 1:n()) %>%
-  transform(prediction = max.col(predictions)) %>%
-  bind_cols(labels) %>%
-  mutate(correct = ifelse(prediction == label, 1, 0)) %>%
-  as_tibble() %>%
-  mutate(
-    label = as.factor(label),
-    prediction = as.factor(prediction)
-  )
+  #mutate(prediction = ifelse(V2>0.44679253,2,1)) %>%
+  bind_cols(labels3) %>%
+  #mutate(correct = ifelse(prediction == label, 1, 0)) %>%
+  as_tibble() 
 
-play_summary3 <- cbind(play_summary2, predictions[,c('correct', 'prediction')]) %>% rename(coverageRead = prediction)
+#ROC and AUC
+roc3 <- roc(response = predictions3$label, predictor=predictions3$V2)
+plot.roc(roc3)
+View(coords(roc3, 'local maxima'))
+
+predictions3 <- predictions3 %>%
+  mutate(prediction = ifelse(V2>0.44679253,2,1)) %>%
+  mutate(correct = ifelse(prediction == label, 1, 0)) %>%
+  as_tibble() 
 
 #accuracies
-ps3f <- play_summary3 %>% filter(playDisguised == F)
-ps3t <- play_summary3 %>% filter(playDisguised == T)
+sum(predictions3$correct)/1000
 
-sum(ps3t$correct)/nrow(ps3t)
-sum(ps3f$correct)/nrow(ps3f)
+predf <- predictions3 %>% filter(label == 1)
+predt <- predictions3 %>% filter(label == 2)
+
+sum(predf$correct)/nrow(predf)
+sum(predt$correct)/nrow(predt)
+
+#calibration
+predictions3 %>% cal_plot_breaks(label, V1)
+
+#animation
+#disguise rates mof
+#lionsplays
+#epaplotcotv
+#plotting-defense-pc
+#mean ds for all cov types
