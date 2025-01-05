@@ -27,7 +27,8 @@ fb_snap_pos <- lapply(pass_tracking, \(x) x %>%
   do.call('rbind',.) %>% 
   rename(fb.x = x, fb.y = y) %>% 
   mutate(fb.off.x = ifelse(playDirection == 'right', fb.x, 120 - fb.x)) %>%
-  mutate(fb.off.y = ifelse(playDirection == 'left', fb.y, 53.3 - fb.y))
+  mutate(fb.off.y = ifelse(playDirection == 'left', fb.y, 53.3 - fb.y)) %>%
+  mutate(gameIdplayId = paste0(gameId, playId))
 
 #re-orient all players to offense
 pass_tracking <- lapply(pass_tracking, \(l) l %>% 
@@ -152,7 +153,7 @@ pass_plays_dis <- left_join(pass_plays_dis, deepest_dis[,c('gameId', 'playId', '
   select(!c('disguised2'))
 
 #add disguise assignments to all pass tracking data
-pass_tracking_dis <- lapply(pass_tracking, \(l) inner_join(l, pass_plays_dis[,c('gameId', 'playId', 'mof', 'highSafeties', 'playDisguised')], join_by('gameId', 'playId')) %>% left_join(., player_play[,c('gameId', 'playId', 'nflId', 'pff_defensiveCoverageAssignment')],join_by('gameId', 'playId', 'nflId')) %>% left_join(.,players[,c('nflId', 'position')], join_by('nflId')))
+pass_tracking_dis <- lapply(pass_tracking, \(l) inner_join(l, pass_plays_dis[,c('gameId', 'playId', 'mof', 'highSafeties', 'playDisguised', 'yardsToGo')], join_by('gameId', 'playId')) %>% left_join(., player_play[,c('gameId', 'playId', 'nflId', 'pff_defensiveCoverageAssignment')],join_by('gameId', 'playId', 'nflId')) %>% left_join(.,players[,c('nflId', 'position')], join_by('nflId')))
 
 #defense only
 pass_tracking_disd <- lapply(pass_tracking_dis, \(l) l %>% filter(position %in% c('ILB', 'DT', 'CB', 'DE', 'SS', 'NT', 'FS', 'OLB', 'MLB', 'DB', 'LB')))
@@ -176,10 +177,64 @@ mismatch <- lapply(pass_tracking_disd, \(l) l %>% mutate(mismatch = case_when(
   filter(mismatch == T)) %>% 
   do.call('rbind',.) %>% 
   group_by(gameId,playId) #%>% 
-  #summarize(no_players = n_distinct(nflId))
 
 pass_plays_dis <- anti_join(pass_plays_dis, mismatch, join_by(gameId, playId))
 
 pass_tracking_dis <- lapply(pass_tracking_dis, \(l) anti_join(l, mismatch, join_by(gameId, playId)))
 
 pass_tracking_disd <- lapply(pass_tracking_disd, \(l) anti_join(l, mismatch, join_by(gameId, playId)))
+
+#reduce to last frame pre-snap and remove footballs
+pt_dis_lfps <- lapply(pass_tracking_dis, \(l) l %>% filter(frameType=='BEFORE_SNAP') %>% group_by(gameId, playId, nflId) %>% summarise(last.frame=max(frameId)) %>% ungroup(.) %>% left_join(., l, join_by(gameId, playId, nflId, last.frame == frameId))) %>% do.call('rbind',.) %>% filter(!is.na(position))
+
+#check for players out of bounds/across LoS w/1-yd buffer
+outofbounds_side <- pt_dis_lfps %>% 
+  filter(fb.or.y > 53.3 / 2 | fb.or.y < (-53.3 / 2)) %>% 
+  group_by(gameId, playId) %>% 
+  summarize()
+
+outofbounds_los <- pt_dis_lfps %>% 
+  filter(case_when(position %in% c('ILB', 'DT', 'CB', 'DE', 'SS', 'NT', 'FS', 'OLB', 'MLB', 'DB', 'LB') ~ fb.or.x < (-1), position %in% c('G', 'C', 'WR', 'T', 'QB', 'RB', 'TE', 'FB') ~ fb.or.x > 1)) %>% 
+  group_by(gameId, playId) %>% 
+  summarize()
+
+pass_plays_dis <- anti_join(pass_plays_dis, outofbounds_los, join_by(gameId, playId)) %>% 
+  anti_join(., outofbounds_side, join_by(gameId, playId)) %>% 
+  mutate(gameIdplayId=paste0(gameId,playId))
+
+#assign numbers to clubs and positions
+clubs <- as.data.frame(sort(unique(pass_plays_dis$possessionTeam)))
+colnames(clubs) <- c('club')
+clubs$clubNum <- seq(1, nrow(clubs), by=1)
+
+positions <- as.data.frame(unique(players$position))
+colnames(positions) <- c('position')
+positions$positionNum <- seq(1, nrow(positions), 1)
+
+#create structure for tensor
+pt_for_tensor <- pt_dis_lfps %>% 
+  left_join(positions) %>% 
+  left_join(clubs) %>% 
+  select(c('gameId', 'playId', 'nflId', 'clubNum', 's', 'a', 'off.or.o', 'off.or.dir', 'fb.or.x', 'fb.or.y', 'yardsToGo', 'positionNum')) %>%
+  mutate(gameIdplayId = paste0(gameId, playId)) %>% 
+  select(!c('gameId', 'playId')) %>% 
+  mutate(dir.rad = pi*(off.or.dir / 180), o.rad = pi*(off.or.o / 180)) %>%
+  mutate(dir.x = sin(dir.rad), dir.y = cos(dir.rad)) %>%
+  mutate(o.x = sin(o.rad), o.y = cos(o.rad)) %>%
+  mutate(a.x = dir.x*a, a.y = dir.y*a, s.x = dir.x*s, s.y = dir.y*s) %>%
+  select(-c(s, a, off.or.dir, off.or.o, dir.rad, o.rad, dir.x, dir.y)) %>%
+  left_join(fb_snap_pos[,c('fb.off.y', 'gameIdplayId')], join_by(gameIdplayId))
+
+pt_for_tensord <- pt_for_tensor %>% 
+  filter(positionNum %in% c(5, 6, 7, 8, 10, 11, 12, 15, 16, 18, 19)) %>% 
+  mutate(l2g.or.x = fb.or.x - yardsToGo) %>% 
+  select(-c('yardsToGo'))
+
+pt_for_tensoro <- pt_for_tensor %>% 
+  filter(positionNum %in% c(1, 2, 3, 4, 9, 13, 14, 17)) %>% 
+  select(gameIdplayId, fb.or.x, fb.or.y)
+
+pt_for_tensor_do <- left_join(pt_for_tensord, pt_for_tensoro, join_by('gameIdplayId')) %>% 
+  mutate(x.dis.o = fb.or.x.x - fb.or.x.y, y.dis.o = fb.or.y.x - fb.or.y.y) %>% 
+  select(-c('fb.or.x.y', 'fb.or.y.y')) %>% 
+  rename(fb.or.x = fb.or.x.x, fb.or.y = fb.or.y.x)
