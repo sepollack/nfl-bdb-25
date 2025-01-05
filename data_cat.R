@@ -51,7 +51,7 @@ pass_pp_def <- pass_player_play %>%
 pt_presnap <- lapply(pass_tracking, \(l) l %>% filter(frameType == 'BEFORE_SNAP'))
 
 #summarize by last presnap frame
-pt_presnap_lf <- lapply(pt_presnapd, \(l) l %>%
+pt_presnap_lf <- lapply(pt_presnap, \(l) l %>%
   group_by(gameId, playId, nflId) %>% 
   summarise(last.frame = max(frameId)) %>% 
   left_join(., l, join_by(gameId, playId, nflId, last.frame == frameId))) %>% 
@@ -117,13 +117,15 @@ pass_plays_dis <- pass_plays %>%
   .default = 1)) %>% 
   inner_join(disguised_plays, join_by('gameId', 'playId'))
 
-#if disguised==F check for appropriate one deepest player
+#if disguised==F check for appropriate deepest player
 deepest_dis <- pt_psd_lf_pc %>% 
   group_by(gameId, playId) %>% 
   summarise(deepest = max(fb.or.x)) %>% 
   left_join(., pt_psd_lf_pc, join_by(gameId, playId, deepest == fb.or.x), multiple = 'any') %>% 
   left_join(., pass_plays_dis[, c('gameId', 'playId', 'playDisguised')], join_by('gameId', 'playId')) %>% 
   filter(playDisguised == F)
+
+deepest_dis2_nfl <- read_csv('deepest_dis2.csv')
 
 #check for disguised plays with all shallow players
 deepest_dis2 <- pt_psd_lf_pc %>% 
@@ -149,7 +151,7 @@ deepest_dis <- deepest_dis %>%
   rbind(., deepest_dis2_short)
 
 pass_plays_dis <- left_join(pass_plays_dis, deepest_dis[,c('gameId', 'playId', 'disguised2')], join_by('gameId', 'playId')) %>% 
-  mutate(disguised = ifelse(is.na(disguised2), T, disguised2)) %>% 
+  mutate(playDisguised = ifelse(is.na(disguised2), T, disguised2)) %>% 
   select(!c('disguised2'))
 
 #add disguise assignments to all pass tracking data
@@ -182,14 +184,14 @@ pass_plays_dis <- anti_join(pass_plays_dis, mismatch, join_by(gameId, playId))
 
 pass_tracking_dis <- lapply(pass_tracking_dis, \(l) anti_join(l, mismatch, join_by(gameId, playId)))
 
-pass_tracking_disd <- lapply(pass_tracking_disd, \(l) anti_join(l, mismatch, join_by(gameId, playId)))
+#pass_tracking_disd <- lapply(pass_tracking_disd, \(l) anti_join(l, mismatch, join_by(gameId, playId)))
 
 #reduce to last frame pre-snap and remove footballs
 pt_dis_lfps <- lapply(pass_tracking_dis, \(l) l %>% filter(frameType=='BEFORE_SNAP') %>% group_by(gameId, playId, nflId) %>% summarise(last.frame=max(frameId)) %>% ungroup(.) %>% left_join(., l, join_by(gameId, playId, nflId, last.frame == frameId))) %>% do.call('rbind',.) %>% filter(!is.na(position))
 
 #check for players out of bounds/across LoS w/1-yd buffer
 outofbounds_side <- pt_dis_lfps %>% 
-  filter(fb.or.y > 53.3 / 2 | fb.or.y < (-53.3 / 2)) %>% 
+  filter(fb.or.y > (53.3 / 2) | fb.or.y < (-53.3 / 2)) %>% 
   group_by(gameId, playId) %>% 
   summarize()
 
@@ -200,7 +202,13 @@ outofbounds_los <- pt_dis_lfps %>%
 
 pass_plays_dis <- anti_join(pass_plays_dis, outofbounds_los, join_by(gameId, playId)) %>% 
   anti_join(., outofbounds_side, join_by(gameId, playId)) %>% 
-  mutate(gameIdplayId=paste0(gameId,playId))
+  mutate(gameIdplayId=paste0(gameId, playId))
+
+#pass_tracking_dis <- lapply(pass_tracking_dis, \(l) anti_join(l, outofbounds_los, join_by(gameId, playId)) %>% anti_join(l, outofbounds_side, join_by(gameId,  playId)))
+
+pt_dis_lfps <- anti_join(pt_dis_lfps, outofbounds_los, join_by(gameId, playId)) %>% 
+  anti_join(., outofbounds_side, join_by(gameId, playId)) %>% 
+  mutate(gameIdplayId=paste0(gameId, playId))
 
 #assign numbers to clubs and positions
 clubs <- as.data.frame(sort(unique(pass_plays_dis$possessionTeam)))
@@ -215,9 +223,7 @@ positions$positionNum <- seq(1, nrow(positions), 1)
 pt_for_tensor <- pt_dis_lfps %>% 
   left_join(positions) %>% 
   left_join(clubs) %>% 
-  select(c('gameId', 'playId', 'nflId', 'clubNum', 's', 'a', 'off.or.o', 'off.or.dir', 'fb.or.x', 'fb.or.y', 'yardsToGo', 'positionNum')) %>%
-  mutate(gameIdplayId = paste0(gameId, playId)) %>% 
-  select(!c('gameId', 'playId')) %>% 
+  select(c('gameIdplayId', 'nflId', 'clubNum', 's', 'a', 'off.or.o', 'off.or.dir', 'fb.or.x', 'fb.or.y', 'yardsToGo', 'positionNum', 'highSafeties', 'playDisguised')) %>%
   mutate(dir.rad = pi*(off.or.dir / 180), o.rad = pi*(off.or.o / 180)) %>%
   mutate(dir.x = sin(dir.rad), dir.y = cos(dir.rad)) %>%
   mutate(o.x = sin(o.rad), o.y = cos(o.rad)) %>%
