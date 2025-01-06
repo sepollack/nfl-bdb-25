@@ -77,7 +77,8 @@ folds3 <- splitTools::create_folds(
   y = as.integer(train_label3),
   k = 5,
   type = "stratified",
-  invert = TRUE
+  invert = TRUE,
+  seed = 19
 )
 
 augment_data3 <- function(df,
@@ -254,6 +255,9 @@ for (fold in 1:length(folds3)) {
   .ds_train <- dataset_subset(train_ds3, train_i)
   .ds_val <- dataset_subset(train_ds3, val_i)
   
+  set.seed(19)
+  torch_manual_seed(19)
+  
   .train_dl <- .ds_train %>%
     dataloader(batch_size = 64, shuffle = TRUE)
   .valid_dl <- .ds_val %>%
@@ -349,9 +353,7 @@ predictions3 <- (1 / length(folds3)) * torch_sum(output3_sm, 1)  %>%  as.matrix(
 predictions3 <- predictions3 %>%
   as_tibble() %>%
   mutate(row = 1:n()) %>%
-  #mutate(prediction = ifelse(V2>0.44679253,2,1)) %>%
   bind_cols(labels3) %>%
-  #mutate(correct = ifelse(prediction == label, 1, 0)) %>%
   as_tibble() 
 
 #ROC and AUC
@@ -360,7 +362,7 @@ plot.roc(roc3)
 View(coords(roc3, 'local maxima'))
 
 predictions3 <- predictions3 %>%
-  mutate(prediction = ifelse(V2>0.44679253,2,1)) %>%
+  mutate(prediction = ifelse(V2 > 0.44198134, 2, 1)) %>%
   mutate(correct = ifelse(prediction == label, 1, 0)) %>%
   as_tibble() 
 

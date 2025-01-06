@@ -53,7 +53,7 @@ label_tensor <- torch_tensor(play_summary$highSafeties, dtype = torch_long())
 data_tensor <- torch_squeeze(data_tensor)
 
 test_size <- 2645
-set.seed(19) #hey
+set.seed(19)
 
 # hold out
 test_id <- sample(1:n_plays, size = test_size)
@@ -72,7 +72,8 @@ folds <- splitTools::create_folds(
   y = as.integer(train_label),
   k = 5,
   type = "stratified",
-  invert = TRUE
+  invert = TRUE,
+  seed = 19
 )
 
 
@@ -248,6 +249,9 @@ for (fold in 1:length(folds)) {
   
   .ds_train <- dataset_subset(train_ds, train_i)
   .ds_val <- dataset_subset(train_ds, val_i)
+  
+  set.seed(19)
+  torch_manual_seed(19)
   
   .train_dl <- .ds_train %>%
     dataloader(batch_size = 64, shuffle = TRUE)
