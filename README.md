@@ -1,9 +1,9 @@
 # nfl-bdb-25
 
-This is the accompanying code for my NFL Big Data Bowl Submission, located here: [insert link]
+This is the accompanying code for my NFL Big Data Bowl Submission, located here: <https://www.kaggle.com/code/sarahpollack/under-cover-2-predicting-disguised-defenses>
 
 1.  data_cat.R loads the BDB data and filters and processes it, including categorizing plays as disguised or undisguised.
-2.  model_cr.R fits the coverage read model and applies it to the data to feed into model2.
+2.  model_cr.R fits the coverage read model and applies it to the data to feed into model_cr.
 3.  model_ds.R fits the Disguise Score model and contains the post-modeling analysis.
 
 Model architecture taken from:
